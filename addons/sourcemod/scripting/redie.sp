@@ -513,6 +513,8 @@ public Action:Event_RoundEnd(Handle:event, const String:name[], bool:dontBroadca
 			if (g_bIsGhost[client]) {
 
 				SetEntProp(client, Prop_Send, "m_lifeState", 0);
+				SetEntProp(client, Prop_Data, "m_iFrags", GetClientFrags(client) + 1);
+				SetEntProp(client, Prop_Data, "m_iDeaths", GetClientDeaths(client) - 1);
 				ForcePlayerSuicide(client);
 			}
 		}
