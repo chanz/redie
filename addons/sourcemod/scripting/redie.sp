@@ -53,7 +53,7 @@ public Plugin:myinfo = {
 	name 						= "Redie and be a ghost",
 	author 						= "Chanz, MeoW",
 	description 				= "Return as a ghost after you died.",
-	version 					= "2.9",
+	version 					= "2.10",
 	url 						= "http://bcserv.eu/"
 }
 
@@ -406,7 +406,9 @@ public ConVarChange_AdvertTime(Handle:cvar, const String:oldVal[], const String:
 		g_hTimer_Adverts = INVALID_HANDLE;
 	}
 
-	g_hTimer_Adverts = CreateTimer(g_flPlugin_AdvertTime, Timer_Advert, INVALID_HANDLE, TIMER_REPEAT);
+	if (g_flPlugin_AdvertTime > 0.0) {
+		g_hTimer_Adverts = CreateTimer(g_flPlugin_AdvertTime, Timer_Advert, INVALID_HANDLE, TIMER_REPEAT);
+	}
 }
 
 public ConVarChange_AutoGhostTime(Handle:cvar, const String:oldVal[], const String:newVal[])
