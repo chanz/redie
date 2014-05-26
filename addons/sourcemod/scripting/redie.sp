@@ -462,6 +462,8 @@ public Action:Command_Redie(client, args)
 
 	if (g_bIsGhost[client]) {
 
+		SetEntProp(client, Prop_Data, "m_iFrags", GetClientFrags(client) + 1);
+		SetEntProp(client, Prop_Data, "m_iDeaths", GetClientDeaths(client) - 1);
 		ForcePlayerSuicide(client);
 		return Plugin_Handled;
 	}
