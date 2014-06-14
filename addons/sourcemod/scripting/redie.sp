@@ -53,7 +53,7 @@ public Plugin:myinfo = {
 	name 						= "Redie and be a ghost",
 	author 						= "Chanz, MeoW",
 	description 				= "Return as a ghost after you died.",
-	version 					= "2.10",
+	version 					= "2.11",
 	url 						= "http://bcserv.eu/"
 }
 
@@ -64,7 +64,8 @@ public Plugin:myinfo = {
 
 
 ***************************************************************************************/
-
+#define LIFESTATE_DEAD 1
+#define LIFESTATE_ALIVE 0
 
 /***************************************************************************************
 
@@ -129,6 +130,7 @@ public OnPluginStart()
 	
 	// Command Hooks (AddCommandListener) (If the command already exists, like the command kill, then hook it!)
 	AddCommandListener(CommandListener_Any);
+	AddCommandListener(CommandListener_Drop, "drop");
 	
 	// Register New Commands (PluginManager_RegConsoleCmd) (If the command doesn't exist, hook it here)
 	PluginManager_RegConsoleCmd("sm_redie", Command_Redie, "After death you can use this command to respawn as a ghost");
@@ -251,11 +253,11 @@ public Action:NormalSoundHook_FlashLight(clients[64], &numClients, String:sample
 
 public Action:Timer_ResetLifeState(Handle:timer)
 {
-	LOOP_CLIENTS(client,CLIENTFILTER_ALL) {
+	LOOP_CLIENTS(client, CLIENTFILTER_INGAMEAUTH) {
 
 		if(g_bIsGhost[client]) {
 
-			SetEntProp(client, Prop_Send, "m_lifeState", 0);
+			SetEntProp(client, Prop_Send,"m_lifeState", LIFESTATE_ALIVE);
 		}
 	}
 }
@@ -320,7 +322,7 @@ public Hook_ThinkPost_PlayerManager(entity)
 		return;
 	}
 
-	LOOP_CLIENTS(client,CLIENTFILTER_ALL) {
+	LOOP_CLIENTS(client, CLIENTFILTER_INGAMEAUTH) {
 
 		if(g_bIsGhost[client]) {
 
@@ -434,6 +436,14 @@ public Action:CommandListener_Any(client, const String:command[], argc)
 		return Plugin_Continue;
 	}
 
+	if (!Client_IsValid(client)) {
+		return Plugin_Continue;
+	}
+
+	if (!Client_IsAdmin(client)) {
+		return Plugin_Continue;
+	}
+
 	decl String:cmd[256];
 	GetCmdArgString(cmd, sizeof(cmd));
 
@@ -442,7 +452,24 @@ public Action:CommandListener_Any(client, const String:command[], argc)
 	}
 
 	// If there is any command which uses @dead or @alive we set the life states back to prevent that ghosts are treated as alive players.
-	SetLifeStateBack();
+	FlickerLifeState();
+	return Plugin_Continue;
+}
+
+public Action:CommandListener_Drop(client, const String:command[], argc)
+{
+	if (g_iPlugin_Enable == 0) {
+		return Plugin_Continue;
+	}
+
+	if (!Client_IsValid(client)) {
+		return Plugin_Continue;
+	}
+
+	if (g_bIsGhost[client]) {
+		Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N} You can't drop weapons as ghost");
+		return Plugin_Stop;
+	}
 	return Plugin_Continue;
 }
 
@@ -462,8 +489,6 @@ public Action:Command_Redie(client, args)
 
 	if (g_bIsGhost[client]) {
 
-		SetEntProp(client, Prop_Data, "m_iFrags", GetClientFrags(client) + 1);
-		SetEntProp(client, Prop_Data, "m_iDeaths", GetClientDeaths(client) - 1);
 		ForcePlayerSuicide(client);
 		return Plugin_Handled;
 	}
@@ -510,13 +535,11 @@ public Action:Event_RoundEnd(Handle:event, const String:name[], bool:dontBroadca
 
 	if (g_iPlugin_Enable != 0) {
 
-		LOOP_CLIENTS(client,CLIENTFILTER_ALL) {
+		LOOP_CLIENTS(client, CLIENTFILTER_INGAMEAUTH) {
 
 			if (g_bIsGhost[client]) {
 
-				SetEntProp(client, Prop_Send, "m_lifeState", 0);
-				SetEntProp(client, Prop_Data, "m_iFrags", GetClientFrags(client) + 1);
-				SetEntProp(client, Prop_Data, "m_iDeaths", GetClientDeaths(client) - 1);
+				SetEntProp(client, Prop_Send,"m_lifeState", LIFESTATE_ALIVE);
 				ForcePlayerSuicide(client);
 			}
 		}
@@ -581,6 +604,10 @@ public Action:Event_PlayerDeath(Handle:event, const String:name[], bool:dontBroa
 	new bool:handleEvent = g_bIsGhost[client];
 
 	if (g_bIsGhost[client]) {
+		
+		Client_SetScore(client, Client_GetScore(client) + 1);
+		Client_SetDeaths(client, Client_GetDeaths(client) - 1);
+
 		new ragdoll = GetEntPropEnt(client, Prop_Send, "m_hRagdoll");
 		if (Entity_IsValid(ragdoll)) {
 			Entity_Kill(ragdoll);
@@ -590,7 +617,7 @@ public Action:Event_PlayerDeath(Handle:event, const String:name[], bool:dontBroa
 	Client_InitializeVariables(client);
 
 	// Lets test if the round is over by setting the life state of the ghosts for a short time.
-	SetLifeStateBack();
+	FlickerLifeState();
 
 	if (g_flPlugin_AutoGhostTime > 0.0) {
 		CreateTimer(g_flPlugin_AutoGhostTime, Timer_AutoGhostSpawn, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
@@ -626,13 +653,13 @@ public Action:Event_PlayerFootstep(Handle:event, const String:name[], bool:dontB
 
 
 ***************************************************************************************/
-SetLifeStateBack()
+FlickerLifeState()
 {
-	LOOP_CLIENTS(client,CLIENTFILTER_ALL) {
+	LOOP_CLIENTS(client,CLIENTFILTER_INGAMEAUTH) {
 
 		if(g_bIsGhost[client]) {
 
-			SetEntProp(client, Prop_Send, "m_lifeState", 1);
+			SetEntProp(client, Prop_Send, "m_lifeState", LIFESTATE_DEAD);
 		}
 	}
 	CreateTimer(0.2, Timer_ResetLifeState, INVALID_HANDLE, TIMER_FLAG_NO_MAPCHANGE);
@@ -644,7 +671,7 @@ ResetAllGhosts()
 
 		if (g_bIsGhost[client]) {
 			
-			SetEntProp(client, Prop_Send, "m_lifeState", 0);
+			SetEntProp(client, Prop_Send,"m_lifeState", LIFESTATE_ALIVE);
 			ForcePlayerSuicide(client);
 		}
 	}
