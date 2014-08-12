@@ -53,8 +53,8 @@ public Plugin:myinfo = {
 	name 						= "Redie and be a ghost",
 	author 						= "Chanz, MeoW",
 	description 				= "Return as a ghost after you died.",
-	version 					= "2.12",
-	url 						= "http://bcserv.eu/"
+	version 					= "2.13",
+	url 						= "https://github.com/chanz/redie"
 }
 
 /***************************************************************************************
@@ -85,12 +85,14 @@ new Handle:g_cvarEnable 					= INVALID_HANDLE;
 new Handle:g_cvarAutoGhostTime				= INVALID_HANDLE;
 new Handle:g_cvarGhostTransparency = INVALID_HANDLE;
 new Handle:g_cvarHideGhostsFromObservers = INVALID_HANDLE;
+new Handle:g_cvarAllTalk = INVALID_HANDLE;
 
 // Console Variables: Runtime Optimizers
 new g_iPlugin_Enable 					= 1;
 new Float:g_flPlugin_AutoGhostTime	 	= 0.0;
 new g_iPlugin_GhostTransparency = 175;
 new bool:g_bPlugin_HideGhostsFromObservers = true;
+new bool:g_bGame_AllTalk = false;
 
 // Timers
 
@@ -148,11 +150,15 @@ public OnPluginStart()
 	g_cvarGhostTransparency = PluginManager_CreateConVar("ghost_transparency", "175", "Transparency of a player as ghost (0 = invisible; 255 = fully visible)", 0, true, 0.0, true, 255.0);
 	g_cvarHideGhostsFromObservers = PluginManager_CreateConVar("hide_ghosts_from_observers", "1", "When set to 1 spectators and dead players observing can't see or follow ghosts", 0, true, 0.0, true, 1.0);
 
+	// Find Cvars
+	g_cvarAllTalk = FindConVar("sv_alltalk");
+
 	// Hook ConVar Change
 	HookConVarChange(g_cvarEnable, ConVarChange_Enable);
 	HookConVarChange(g_cvarAutoGhostTime, ConVarChange_AutoGhostTime);
 	HookConVarChange(g_cvarGhostTransparency, ConVarChange_GhostTransparency);
 	HookConVarChange(g_cvarHideGhostsFromObservers, ConVarChange_HideGhostsFromObservers);
+	HookConVarChange(g_cvarAllTalk, ConVarChange_AllTalk);
 	
 	// Event Hooks
 	PluginManager_HookEvent("round_start", Event_RoundStart);	
@@ -204,10 +210,11 @@ public OnConfigsExecuted()
 	g_iPlugin_Enable = GetConVarInt(g_cvarEnable);
 	g_flPlugin_AutoGhostTime = GetConVarFloat(g_cvarAutoGhostTime);
 	g_iPlugin_GhostTransparency = GetConVarInt(g_cvarGhostTransparency);
-	g_bPlugin_HideGhostsFromObservers = bool:GetConVarInt(g_cvarHideGhostsFromObservers);
+	g_bPlugin_HideGhostsFromObservers = GetConVarBool(g_cvarHideGhostsFromObservers);
+	g_bGame_AllTalk = GetConVarBool(g_cvarAllTalk);
 
 	// Timers
-
+	CreateTimer(0.1, Timer_UpdateListeners, INVALID_HANDLE, TIMER_REPEAT);
 	
 	// Mind: this is only here for late load, since on map change or server start, there isn't any client.
 	// Remove it if you don't need it.
@@ -235,6 +242,20 @@ public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:ang
 	return Plugin_Changed;
 }
 
+public Action:OnClientSayCommand(client, const String:command[], const String:sArgs[]){
+
+	if (!g_bIsGhost[client]) {
+		return Plugin_Continue;
+	}
+
+	if (g_bHasRoundEnded) {
+		Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N}Please wait for the new round to begin.");
+		return Plugin_Handled;
+	}
+	FlickerLifeState(client, 0.001);
+	return Plugin_Continue;
+}
+
 /**************************************************************************************
 
 
@@ -255,15 +276,30 @@ public Action:NormalSoundHook_BlockSoundsFromGhosts(clients[64], &numClients, St
 	return Plugin_Continue;
 }
 
-public Action:Timer_ResetLifeState(Handle:timer)
+public Action:Timer_ResetLifeState(Handle:timer, any:userid)
 {
-	LOOP_CLIENTS(client, CLIENTFILTER_INGAMEAUTH) {
+	if (g_bHasRoundEnded) {
+		return Plugin_Handled;
+	}
 
-		if(g_bIsGhost[client]) {
+	if (userid != -1) {
+		new client = GetClientOfUserId(userid);
+
+		if (Client_IsValid(client) && g_bIsGhost[client]) {
 
 			SetEntProp(client, Prop_Send,"m_lifeState", LIFESTATE_ALIVE);
 		}
 	}
+	else {
+		LOOP_CLIENTS(client, CLIENTFILTER_INGAMEAUTH) {
+
+			if(g_bIsGhost[client]) {
+
+				SetEntProp(client, Prop_Send,"m_lifeState", LIFESTATE_ALIVE);
+			}
+		}
+	}
+	return Plugin_Continue;
 }
 
 public Action:Timer_TakeWeapons(Handle:timer, any:userid)
@@ -304,6 +340,64 @@ public Action:Timer_AutoGhostSpawn(Handle:timer, any:userid)
 
 	Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N}Auto ghost respawn enabled: You are now a ghost.");
 	return Plugin_Handled;
+}
+
+public Action:Timer_UpdateListeners(Handle:timer) {
+
+	if (g_iPlugin_Enable == 0) {
+		return Plugin_Continue;
+	}
+
+	// Disable if all talk is on
+	if (g_bGame_AllTalk) {
+		return Plugin_Continue;
+	}
+
+	// We will invert all listeners as if the ghosts are marked dead by the game engine
+	LOOP_CLIENTS(receiver, CLIENTFILTER_INGAMEAUTH) {
+
+		new receiverTeam = GetClientTeam(receiver);
+		LOOP_CLIENTS(sender, CLIENTFILTER_INGAMEAUTH) {
+
+			// Skip the receiver himself
+			if (receiver == sender) {
+				continue;
+			}
+
+			SetListenOverride(receiver, sender, Listen_Default);
+
+			// If a ghost listens....
+			if (g_bIsGhost[receiver]) {
+
+				// the sender is alive or a ghost an in the same team, then allow listening
+				if (GetClientTeam(sender) == receiverTeam) {
+
+					SetListenOverride(receiver, sender, Listen_Yes);
+				}
+				else {
+					// the sender is alive or not on the same team, then disallow listening
+					SetListenOverride(receiver, sender, Listen_No);
+				}
+			}
+
+			// If the sender is a ghost...
+			if (g_bIsGhost[sender]) {
+				
+				// only dead players or other ghosts on the same team can listen
+				if ((!IsPlayerAlive(receiver) || g_bIsGhost[receiver]) && GetClientTeam(sender) == receiverTeam) {
+
+					SetListenOverride(receiver, sender, Listen_Yes);
+				}
+				else {
+
+					// alive players and the other team can't listen
+					SetListenOverride(receiver, sender, Listen_No);
+				}
+			}
+		}
+	}
+
+	return Plugin_Changed;
 }
 /**************************************************************************************
 
@@ -412,6 +506,11 @@ public ConVarChange_GhostTransparency(Handle:cvar, const String:oldVal[], const 
 public ConVarChange_HideGhostsFromObservers(Handle:cvar, const String:oldVal[], const String:newVal[])
 {
 	g_bPlugin_HideGhostsFromObservers = bool:StringToInt(newVal);
+}
+
+public ConVarChange_AllTalk(Handle:cvar, const String:oldVal[], const String:newVal[])
+{
+	g_bGame_AllTalk = bool:StringToInt(newVal);
 }
 
 /**************************************************************************************
@@ -762,16 +861,25 @@ public Action:Event_PlayerFootstep(Handle:event, const String:name[], bool:dontB
 
 
 ***************************************************************************************/
-FlickerLifeState()
+
+FlickerLifeState(client=-1, Float:time=0.2)
 {
-	LOOP_CLIENTS(client,CLIENTFILTER_INGAMEAUTH) {
+	if (client != -1) {
 
-		if(g_bIsGhost[client]) {
-
-			SetEntProp(client, Prop_Send, "m_lifeState", LIFESTATE_DEAD);
-		}
+		SetEntProp(client, Prop_Send, "m_lifeState", LIFESTATE_DEAD);
+		CreateTimer(time, Timer_ResetLifeState, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
 	}
-	CreateTimer(0.2, Timer_ResetLifeState, INVALID_HANDLE, TIMER_FLAG_NO_MAPCHANGE);
+	else {
+
+		LOOP_CLIENTS(player,CLIENTFILTER_INGAMEAUTH) {
+
+			if(g_bIsGhost[player]) {
+
+				SetEntProp(player, Prop_Send, "m_lifeState", LIFESTATE_DEAD);
+			}
+		}
+		CreateTimer(time, Timer_ResetLifeState, -1, TIMER_FLAG_NO_MAPCHANGE);
+	}
 }
 
 ResetAllGhosts() 
