@@ -162,7 +162,7 @@ public OnPluginStart()
 	PluginManager_HookEvent("player_footstep", Event_PlayerFootstep, EventHookMode_Pre);
 
 	// Sound Hook
-	AddNormalSoundHook(NormalSoundHook_FlashLight);
+	AddNormalSoundHook(NormalSoundHook_BlockSoundsFromGhosts);
 	
 	// Library
 	
@@ -242,18 +242,14 @@ public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:ang
 
 
 **************************************************************************************/
-public Action:NormalSoundHook_FlashLight(clients[64], &numClients, String:sample[PLATFORM_MAX_PATH], &entity, &channel, &Float:volume, &level, &pitch, &flags)
+public Action:NormalSoundHook_BlockSoundsFromGhosts(clients[64], &numClients, String:sample[PLATFORM_MAX_PATH], &entity, &channel, &Float:volume, &level, &pitch, &flags)
 {
 	if (g_iPlugin_Enable == 0) {
 		return Plugin_Continue;
 	}
 
 	if (Client_IsValid(entity) &&  g_bIsGhost[entity]) {
-
-		if (StrEqual(sample, "items/flashlight1.wav", false)) {
-
-			return Plugin_Stop;
-		}
+		return Plugin_Stop;
 	}
 	
 	return Plugin_Continue;
