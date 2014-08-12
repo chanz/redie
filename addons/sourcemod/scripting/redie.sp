@@ -53,7 +53,7 @@ public Plugin:myinfo = {
 	name 						= "Redie and be a ghost",
 	author 						= "Chanz, MeoW",
 	description 				= "Return as a ghost after you died.",
-	version 					= "2.11",
+	version 					= "2.12",
 	url 						= "http://bcserv.eu/"
 }
 
@@ -82,16 +82,14 @@ public Plugin:myinfo = {
 
 // Console Variables
 new Handle:g_cvarEnable 					= INVALID_HANDLE;
-new Handle:g_cvarAdvertTime 				= INVALID_HANDLE;
 new Handle:g_cvarAutoGhostTime				= INVALID_HANDLE;
 
 // Console Variables: Runtime Optimizers
 new g_iPlugin_Enable 					= 1;
-new Float:g_flPlugin_AdvertTime 		= 120.0;
 new Float:g_flPlugin_AutoGhostTime	 	= 0.0;
 
 // Timers
-new Handle:g_hTimer_Adverts = INVALID_HANDLE;
+
 
 // Library Load Checks
 
@@ -140,12 +138,10 @@ public OnPluginStart()
 	
 	// Cvars: Create a global handle variable.
 	g_cvarEnable = PluginManager_CreateConVar("enable", "1", "Enables or disables this plugin");
-	g_cvarAdvertTime = PluginManager_CreateConVar("advert_time", "120.0", "Time in seconds between adverts in the chat (0 = disabled).", 0, true, 0.0);
 	g_cvarAutoGhostTime = PluginManager_CreateConVar("auto_ghost_time", "0", "Time in seconds after a player is auto respawned as ghost after death (0 = disabled)");
 
 	// Hook ConVar Change
 	HookConVarChange(g_cvarEnable, ConVarChange_Enable);
-	HookConVarChange(g_cvarAdvertTime, ConVarChange_AdvertTime);
 	HookConVarChange(g_cvarAutoGhostTime, ConVarChange_AutoGhostTime);
 	
 	// Event Hooks
@@ -196,11 +192,10 @@ public OnConfigsExecuted()
 {
 	// Set your ConVar runtime optimizers here
 	g_iPlugin_Enable = GetConVarInt(g_cvarEnable);
-	g_flPlugin_AdvertTime = GetConVarFloat(g_cvarAdvertTime);
 	g_flPlugin_AutoGhostTime = GetConVarFloat(g_cvarAutoGhostTime);
 
 	// Timers
-	g_hTimer_Adverts = CreateTimer(g_flPlugin_AdvertTime, Timer_Advert, INVALID_HANDLE, TIMER_REPEAT);
+
 	
 	// Mind: this is only here for late load, since on map change or server start, there isn't any client.
 	// Remove it if you don't need it.
@@ -272,16 +267,6 @@ public Action:Timer_TakeWeapons(Handle:timer, any:userid)
 
 	Client_RemoveAllWeapons(client);
 	g_bCanPickupWeapons[client] = false;
-	return Plugin_Continue;
-}
-
-public Action:Timer_Advert(Handle:timer)
-{
-	if (g_iPlugin_Enable == 0) {
-		return Plugin_Continue;
-	}
-
-	Client_PrintToChatAll(false, "{O}[{G}Redie{O}] {N}This server is running !redie.");
 	return Plugin_Continue;
 }
 
@@ -396,20 +381,6 @@ public ConVarChange_Enable(Handle:cvar, const String:oldVal[], const String:newV
 
 	if (g_iPlugin_Enable == 0) {
 		ResetAllGhosts();
-	}
-}
-
-public ConVarChange_AdvertTime(Handle:cvar, const String:oldVal[], const String:newVal[])
-{
-	g_flPlugin_AdvertTime = StringToFloat(newVal);
-
-	if (g_hTimer_Adverts != INVALID_HANDLE) {
-		CloseHandle(g_hTimer_Adverts);
-		g_hTimer_Adverts = INVALID_HANDLE;
-	}
-
-	if (g_flPlugin_AdvertTime > 0.0) {
-		g_hTimer_Adverts = CreateTimer(g_flPlugin_AdvertTime, Timer_Advert, INVALID_HANDLE, TIMER_REPEAT);
 	}
 }
 
@@ -635,11 +606,6 @@ public Action:Event_PlayerFootstep(Handle:event, const String:name[], bool:dontB
 	new client = GetClientOfUserId(GetEventInt(event, "userid"));
 
 	if (!Client_IsValid(client)) {
-		return Plugin_Continue;
-	}
-
-	if (!Client_IsValid(client)) {
-
 		return Plugin_Continue;
 	}
 	return g_bIsGhost[client] ? Plugin_Handled : Plugin_Continue;
