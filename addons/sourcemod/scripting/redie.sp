@@ -90,6 +90,7 @@ new Float:g_flPlugin_AutoGhostTime	 	= 0.0;
 
 // Timers
 
+
 // Library Load Checks
 
 
@@ -107,7 +108,8 @@ new bool:g_bCanPickupWeapons[MAXPLAYERS+1];
 new bool:g_bRespawnAsGhost[MAXPLAYERS+1];
 
 // M i s c
-
+// Hook Simulate Touch
+new Handle:g_hSDK_Touch = INVALID_HANDLE;
 
 /***************************************************************************************
 
@@ -128,6 +130,7 @@ public OnPluginStart()
 	// Command Hooks (AddCommandListener) (If the command already exists, like the command kill, then hook it!)
 	AddCommandListener(CommandListener_Any);
 	AddCommandListener(CommandListener_Drop, "drop");
+	AddCommandListener(CommandListener_Kill, "kill");
 	
 	// Register New Commands (PluginManager_RegConsoleCmd) (If the command doesn't exist, hook it here)
 	PluginManager_RegConsoleCmd("sm_redie", Command_Redie, "After death you can use this command to respawn as a ghost");
@@ -161,6 +164,25 @@ public OnPluginStart()
 		
 	}
 	*/
+
+	// Register SDK Hook to simulate touching
+	new Handle:hGameConf = LoadGameConfigFile("sdkhooks.games");
+
+	if(hGameConf == INVALID_HANDLE) {
+		SetFailState("GameConfigFile sdkhooks.games was not found");
+		return;
+	}
+
+	StartPrepSDKCall(SDKCall_Entity);
+	PrepSDKCall_SetFromConf(hGameConf,SDKConf_Virtual,"Touch");
+	PrepSDKCall_AddParameter(SDKType_CBaseEntity,SDKPass_Pointer);
+	g_hSDK_Touch = EndPrepSDKCall();
+	CloseHandle(hGameConf);
+
+	if(g_hSDK_Touch == INVALID_HANDLE) {
+		SetFailState("Unable to prepare virtual function CBaseEntity::Touch");
+		return;
+	}
 	
 	// Create ADT Arrays
 	
@@ -177,14 +199,23 @@ public OnPluginEnd()
 
 public OnMapStart()
 {
-	new entity = FindEntityByClassname(0, "cs_player_manager");
+	RegisterPlayerManager();
 
-	if (!Entity_IsValid(entity)) {
+	new maxEntities = GetMaxEntities();
+	for(new entity=1; entity<maxEntities; entity++) {
 
-		SetFailState("can't find entity cs_player_manager (%d)", entity);
-		return;
+		if (!IsValidEntity(entity)) {
+			continue;
+		}
+		
+		decl String:entityClassname[MAX_NAME_LENGTH];
+		Entity_GetClassName(entity, entityClassname, sizeof(entityClassname));
+		if (StrContains(entityClassname, "trigger_", false) == -1) {
+			continue;
+		}
+
+		SDKHook(entity, SDKHook_StartTouch, Hook_OnStartTouch_Trigger);
 	}
-	SDKHook(entity, SDKHook_ThinkPost, Hook_ThinkPost_PlayerManager);
 }
 
 public OnConfigsExecuted()
@@ -244,15 +275,26 @@ public Action:NormalSoundHook_FlashLight(clients[64], &numClients, String:sample
 	return Plugin_Continue;
 }
 
-public Action:Timer_ResetLifeState(Handle:timer)
+public Action:Timer_ResetLifeStateToAlive(Handle:timer, any:userid)
 {
-	LOOP_CLIENTS(client, CLIENTFILTER_INGAMEAUTH) {
-
-		if(g_bIsGhost[client]) {
-
-			SetEntProp(client, Prop_Send,"m_lifeState", LIFESTATE_ALIVE);
-		}
+	new client = GetClientOfUserId(userid);
+	if (!Client_IsValid(client)) {
+		return Plugin_Handled;
 	}
+
+	SetEntProp(client, Prop_Send,"m_lifeState", LIFESTATE_ALIVE);
+	return Plugin_Continue;
+}
+
+public Action:Timer_ResetLifeStateToDead(Handle:timer, any:userid)
+{
+	new client = GetClientOfUserId(userid);
+	if (!Client_IsValid(client)) {
+		return Plugin_Handled;
+	}
+
+	SetEntProp(client, Prop_Send,"m_lifeState", LIFESTATE_DEAD);
+	return Plugin_Continue;
 }
 
 public Action:Timer_TakeWeapons(Handle:timer, any:userid)
@@ -284,6 +326,10 @@ public Action:Timer_AutoGhostSpawn(Handle:timer, any:userid)
 		return Plugin_Handled;
 	}
 
+	if (g_bIsGhost[client]) {
+		return Plugin_Handled;
+	}
+
 	if(GetClientTeam(client) <= 1) {
 		return Plugin_Handled;
 	}
@@ -299,6 +345,7 @@ public Action:Timer_AutoGhostSpawn(Handle:timer, any:userid)
 	S D K   H O O K
 
 **************************************************************************************/
+
 public Hook_ThinkPost_PlayerManager(entity)
 {
 	if (g_iPlugin_Enable == 0) {
@@ -367,6 +414,23 @@ public Action:Hook_OnTakeDamage_Client(victim, &attacker, &inflictor, &Float:dam
 
 	return Plugin_Continue;
 }
+
+public Action:Hook_OnStartTouch_Trigger(entity, other)
+{
+	if (!Client_IsValid(other)) {
+		return Plugin_Continue;
+	}
+
+	if (g_bIsGhost[other]) {
+
+		// Force the touch even if the life state prevents it from touching
+		//SDKCall(g_hSDK_Touch, entity, other);
+		FlickerLifeState(other, LIFESTATE_ALIVE, 0.01);
+	}
+	return Plugin_Continue;
+}
+
+
 /**************************************************************************************
 
 	C O N  V A R  C H A N G E
@@ -416,12 +480,12 @@ public Action:CommandListener_Any(client, const String:command[], argc)
 	decl String:cmd[256];
 	GetCmdArgString(cmd, sizeof(cmd));
 
-	if (StrContains(cmd, "@dead", false) == -1 && StrContains(cmd, "@alive", false) == -1) {
+	if (StrContains(cmd, "@me", false) == -1) {
 		return Plugin_Continue;
 	}
 
-	// If there is any command which uses @dead or @alive we set the life states back to prevent that ghosts are treated as alive players.
-	FlickerLifeState();
+	// If an admin uses a command on himself, his life state is set to alive for a short amount of time.
+	FlickerLifeState(client, LIFESTATE_ALIVE, 0.2);
 	return Plugin_Continue;
 }
 
@@ -436,7 +500,27 @@ public Action:CommandListener_Drop(client, const String:command[], argc)
 	}
 
 	if (g_bIsGhost[client]) {
-		Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N} You can't drop weapons as ghost");
+		Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N} You can't drop weapons as ghost.");
+		return Plugin_Stop;
+	}
+	return Plugin_Continue;
+}
+
+public Action:CommandListener_Kill(client, const String:command[], argc)
+{
+	if (g_iPlugin_Enable == 0) {
+		return Plugin_Continue;
+	}
+
+	if (!Client_IsValid(client)) {
+		return Plugin_Continue;
+	}
+
+	if (g_bIsGhost[client]) {
+		ForcePlayerSuicide(client);
+		Client_SetScore(client, Client_GetScore(client) + 1);
+		Client_SetDeaths(client, Client_GetDeaths(client) - 1);
+		Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N} You are no longer a ghost.");
 		return Plugin_Stop;
 	}
 	return Plugin_Continue;
@@ -458,7 +542,9 @@ public Action:Command_Redie(client, args)
 
 	if (g_bIsGhost[client]) {
 
-		ForcePlayerSuicide(client);
+		g_bRespawnAsGhost[client] = true;
+		CS_RespawnPlayer(client);
+		Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N}You are still a ghost and we've respawned you.");
 		return Plugin_Handled;
 	}
 
@@ -501,18 +587,6 @@ public Action:Event_RoundStart(Handle:event, const String:name[], bool:dontBroad
 public Action:Event_RoundEnd(Handle:event, const String:name[], bool:dontBroadcast) 
 {
 	g_bHasRoundEnded = true;
-
-	if (g_iPlugin_Enable != 0) {
-
-		LOOP_CLIENTS(client, CLIENTFILTER_INGAMEAUTH) {
-
-			if (g_bIsGhost[client]) {
-
-				SetEntProp(client, Prop_Send,"m_lifeState", LIFESTATE_ALIVE);
-				ForcePlayerSuicide(client);
-			}
-		}
-	}
 	Client_InitializeVariablesAll();
 }
 
@@ -526,25 +600,34 @@ public Action:Event_PlayerSpawn(Handle:event, const String:name[], bool:dontBroa
 
 	if (!Client_IsValid(client)) {
 
+		// Client is not valid, reset his variables anyway.
 		Client_InitializeVariables(client);
 		return Plugin_Continue;
 	}
 
 	if (g_bRespawnAsGhost[client]) {
 
+		// The client was spawned as ghost and is not a ghost:
 		g_bIsGhost[client] = true;
 		g_bRespawnAsGhost[client] = false;
 
+		// Setup hitbox and collision group
 		SetEntProp(client, Prop_Send, "m_nHitboxSet", 2);
 		SetEntData(client, g_iOffset_BaseEntity_CollisionGroup, 2, 4, true);
+
+		// This is now the first method/idea used by rambomst, we will try to address the trigger problem somehow else
+		SetEntProp(client, Prop_Send,"m_lifeState", LIFESTATE_DEAD);
 		
+		// Half transparent players to indicate ghosts.
 		SetEntityRenderMode(client, RENDER_TRANSALPHA);
 		Entity_SetRenderColor(client, -1, -1, -1, 150);
 
+		// Take all weapons and do it again with a little delay to ensure all of them have spawned
+		Client_RemoveAllWeapons(client);
 		CreateTimer(0.1, Timer_TakeWeapons, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
 	}
 	else {
-
+		// Spawn as normal player, so we re initialize his variables
 		Client_InitializeVariables(client);
 
 		SetEntProp(client, Prop_Send, "m_nHitboxSet", 0);
@@ -564,7 +647,7 @@ public Action:Event_PlayerDeath(Handle:event, const String:name[], bool:dontBroa
 	new client = GetClientOfUserId(GetEventInt(event, "userid"));
 
 	if (!Client_IsValid(client)) {
-
+		// Client is not valid, reset his variables anyway.
 		Client_InitializeVariables(client);
 		return Plugin_Continue;
 	}
@@ -573,9 +656,6 @@ public Action:Event_PlayerDeath(Handle:event, const String:name[], bool:dontBroa
 	new bool:handleEvent = g_bIsGhost[client];
 
 	if (g_bIsGhost[client]) {
-		
-		Client_SetScore(client, Client_GetScore(client) + 1);
-		Client_SetDeaths(client, Client_GetDeaths(client) - 1);
 
 		new ragdoll = GetEntPropEnt(client, Prop_Send, "m_hRagdoll");
 		if (Entity_IsValid(ragdoll)) {
@@ -583,15 +663,15 @@ public Action:Event_PlayerDeath(Handle:event, const String:name[], bool:dontBroa
 		}
 	}
 
+	// A client has died we reset all variables, since he is now just dead
 	Client_InitializeVariables(client);
 
-	// Lets test if the round is over by setting the life state of the ghosts for a short time.
-	FlickerLifeState();
-
-	if (g_flPlugin_AutoGhostTime > 0.0) {
+	// A normal client has died and we want him to automatically respawn as ghost
+	if (!g_bIsGhost[client] && g_flPlugin_AutoGhostTime > 0.0) {
 		CreateTimer(g_flPlugin_AutoGhostTime, Timer_AutoGhostSpawn, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
 	}
 
+	// If the client is a ghost, we try to block the death event
 	return handleEvent ? Plugin_Handled : Plugin_Continue;
 }
 
@@ -622,16 +702,16 @@ public Action:Event_PlayerFootstep(Handle:event, const String:name[], bool:dontB
 
 
 ***************************************************************************************/
-FlickerLifeState()
+FlickerLifeState(client, flicker_to_lifestate, Float:time)
 {
-	LOOP_CLIENTS(client,CLIENTFILTER_INGAMEAUTH) {
-
-		if(g_bIsGhost[client]) {
-
-			SetEntProp(client, Prop_Send, "m_lifeState", LIFESTATE_DEAD);
-		}
+	if (flicker_to_lifestate == LIFESTATE_ALIVE) {
+		SetEntProp(client, Prop_Send, "m_lifeState", LIFESTATE_ALIVE);
+		CreateTimer(time, Timer_ResetLifeStateToDead, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
 	}
-	CreateTimer(0.2, Timer_ResetLifeState, INVALID_HANDLE, TIMER_FLAG_NO_MAPCHANGE);
+	else if (flicker_to_lifestate == LIFESTATE_DEAD) {
+		SetEntProp(client, Prop_Send, "m_lifeState", LIFESTATE_DEAD);
+		CreateTimer(time, Timer_ResetLifeStateToAlive, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
+	}
 }
 
 ResetAllGhosts() 
@@ -644,6 +724,18 @@ ResetAllGhosts()
 			ForcePlayerSuicide(client);
 		}
 	}
+}
+
+RegisterPlayerManager(){
+	new entity = FindEntityByClassname(0, "cs_player_manager");
+
+	if (!Entity_IsValid(entity)) {
+
+		SetFailState("can't find entity cs_player_manager (%d)", entity);
+		return;
+	}
+
+	SDKHook(entity, SDKHook_ThinkPost, Hook_ThinkPost_PlayerManager);
 }
 
 /***************************************************************************************
