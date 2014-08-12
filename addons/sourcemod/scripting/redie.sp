@@ -83,10 +83,14 @@ public Plugin:myinfo = {
 // Console Variables
 new Handle:g_cvarEnable 					= INVALID_HANDLE;
 new Handle:g_cvarAutoGhostTime				= INVALID_HANDLE;
+new Handle:g_cvarGhostTransparency = INVALID_HANDLE;
+new Handle:g_cvarHideGhostsFromObservers = INVALID_HANDLE;
 
 // Console Variables: Runtime Optimizers
 new g_iPlugin_Enable 					= 1;
 new Float:g_flPlugin_AutoGhostTime	 	= 0.0;
+new g_iPlugin_GhostTransparency = 175;
+new bool:g_bPlugin_HideGhostsFromObservers = true;
 
 // Timers
 
@@ -123,26 +127,32 @@ public OnPluginStart()
 	PluginManager_Initialize("redie", "[SM] ");
 	
 	// Translations
-	// LoadTranslations("common.phrases");
+	LoadTranslations("common.phrases");
 	
 	
 	// Command Hooks (AddCommandListener) (If the command already exists, like the command kill, then hook it!)
 	AddCommandListener(CommandListener_Any);
 	AddCommandListener(CommandListener_Drop, "drop");
+	AddCommandListener(CommandListener_Spec_Next, "spec_next");
+	AddCommandListener(CommandListener_Spec_Prev, "spec_prev");
 	
 	// Register New Commands (PluginManager_RegConsoleCmd) (If the command doesn't exist, hook it here)
 	PluginManager_RegConsoleCmd("sm_redie", Command_Redie, "After death you can use this command to respawn as a ghost");
 	
 	// Register Admin Commands (PluginManager_RegAdminCmd)
-	
+	PluginManager_RegAdminCmd("sm_ghost", Command_Ghost, ADMFLAG_BAN, "Forces a player to die and be a ghost");
 	
 	// Cvars: Create a global handle variable.
 	g_cvarEnable = PluginManager_CreateConVar("enable", "1", "Enables or disables this plugin");
 	g_cvarAutoGhostTime = PluginManager_CreateConVar("auto_ghost_time", "0", "Time in seconds after a player is auto respawned as ghost after death (0 = disabled)");
+	g_cvarGhostTransparency = PluginManager_CreateConVar("ghost_transparency", "175", "Transparency of a player as ghost (0 = invisible; 255 = fully visible)", 0, true, 0.0, true, 255.0);
+	g_cvarHideGhostsFromObservers = PluginManager_CreateConVar("hide_ghosts_from_observers", "1", "When set to 1 spectators and dead players observing can't see or follow ghosts", 0, true, 0.0, true, 1.0);
 
 	// Hook ConVar Change
 	HookConVarChange(g_cvarEnable, ConVarChange_Enable);
 	HookConVarChange(g_cvarAutoGhostTime, ConVarChange_AutoGhostTime);
+	HookConVarChange(g_cvarGhostTransparency, ConVarChange_GhostTransparency);
+	HookConVarChange(g_cvarHideGhostsFromObservers, ConVarChange_HideGhostsFromObservers);
 	
 	// Event Hooks
 	PluginManager_HookEvent("round_start", Event_RoundStart);	
@@ -193,6 +203,8 @@ public OnConfigsExecuted()
 	// Set your ConVar runtime optimizers here
 	g_iPlugin_Enable = GetConVarInt(g_cvarEnable);
 	g_flPlugin_AutoGhostTime = GetConVarFloat(g_cvarAutoGhostTime);
+	g_iPlugin_GhostTransparency = GetConVarInt(g_cvarGhostTransparency);
+	g_bPlugin_HideGhostsFromObservers = bool:GetConVarInt(g_cvarHideGhostsFromObservers);
 
 	// Timers
 
@@ -219,6 +231,7 @@ public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:ang
 		buttons &= ~IN_ATTACK;
 		buttons &= ~IN_ATTACK2;
 	}
+
 	return Plugin_Changed;
 }
 
@@ -322,18 +335,24 @@ public Action:Hook_SetTransmit_Client(entity, client)
 		return Plugin_Continue;
 	}
 
+	// Information to yourself are always transmitted
 	if (entity == client) {
 		return Plugin_Continue;
 	}
 
+	// Ghosts can see other ghosts
 	if (g_bIsGhost[entity] && g_bIsGhost[client]) {
 		return Plugin_Continue;
 	}
 
+	// If a player is not alive then...
 	if (g_bIsGhost[entity] && !IsPlayerAlive(client)) {
-		return Plugin_Continue;
+
+		// If the cvar redie_hide_ghosts_from_spectators then the transmit is handled (stopped)
+		return g_bPlugin_HideGhostsFromObservers ? Plugin_Handled : Plugin_Continue;
 	}
 
+	// To anyone else: as long I'm ghost you can't see me.
 	if (g_bIsGhost[entity]) {
 		return Plugin_Handled;
 	}
@@ -389,6 +408,16 @@ public ConVarChange_AutoGhostTime(Handle:cvar, const String:oldVal[], const Stri
 	g_flPlugin_AutoGhostTime = StringToFloat(newVal);
 }
 
+public ConVarChange_GhostTransparency(Handle:cvar, const String:oldVal[], const String:newVal[])
+{
+	g_iPlugin_GhostTransparency = StringToInt(newVal);
+}
+
+public ConVarChange_HideGhostsFromObservers(Handle:cvar, const String:oldVal[], const String:newVal[])
+{
+	g_bPlugin_HideGhostsFromObservers = bool:StringToInt(newVal);
+}
+
 /**************************************************************************************
 
 	C O M M A N D S
@@ -414,6 +443,8 @@ public Action:CommandListener_Any(client, const String:command[], argc)
 	if (!Client_IsAdmin(client)) {
 		return Plugin_Continue;
 	}
+
+	//PrintToChatAll("client:%d: %s", client, command);
 
 	decl String:cmd[256];
 	GetCmdArgString(cmd, sizeof(cmd));
@@ -444,12 +475,68 @@ public Action:CommandListener_Drop(client, const String:command[], argc)
 	return Plugin_Continue;
 }
 
+public Action:CommandListener_Spec_Next(client, const String:command[], argc)
+{
+	if (g_iPlugin_Enable == 0) {
+		return Plugin_Continue;
+	}
+
+	if (!g_bPlugin_HideGhostsFromObservers) {
+		return Plugin_Continue;
+	}
+
+	if (!g_bIsGhost[client] && !IsPlayerAlive(client)) {
+		
+		new observed = GetNextObservTarget(client);
+		new nextObserved = GetNextObservTarget(client, observed);
+
+		if (Client_IsValid(observed) && g_bIsGhost[observed]) {
+
+			if (Client_IsValid(nextObserved) && !g_bIsGhost[nextObserved]) {
+
+				// Set the next observer target that is not a ghost and prevent the command spec_next from switchen the target too.
+				Client_SetObserverTarget(client, nextObserved);
+				return Plugin_Handled;
+			}
+		}
+	}
+	return Plugin_Continue;
+}
+
+public Action:CommandListener_Spec_Prev(client, const String:command[], argc)
+{
+	if (g_iPlugin_Enable == 0) {
+		return Plugin_Continue;
+	}
+
+	if (!g_bPlugin_HideGhostsFromObservers) {
+		return Plugin_Continue;
+	}
+
+	if (!g_bIsGhost[client] && !IsPlayerAlive(client)) {
+		
+		new observed = GetPreviousObservTarget(client);
+		new prevObserved = GetPreviousObservTarget(client, observed);
+
+		if (Client_IsValid(observed) && g_bIsGhost[observed]) {
+			
+			if (!g_bIsGhost[prevObserved] && Client_IsValid(prevObserved)) {
+
+				// Set the previous observer target that is not a ghost and prevent the command spec_next from switchen the target too.
+				Client_SetObserverTarget(client, prevObserved);
+				return Plugin_Handled;
+			}
+		}
+	}
+	return Plugin_Continue;
+}
+
 public Action:Command_Redie(client, args)
 {
 	if (g_iPlugin_Enable == 0) {
 
 		Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N}Redie has been disabled.");
-		return Plugin_Continue;
+		return Plugin_Handled;
 	}
 
 	if (g_bHasRoundEnded) {
@@ -480,6 +567,65 @@ public Action:Command_Redie(client, args)
 	CS_RespawnPlayer(client);
 
 	Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N}You are now a ghost.");
+	return Plugin_Handled;
+}
+
+public Action:Command_Ghost(client, args)
+{
+	if (g_iPlugin_Enable == 0) {
+
+		Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N}Redie has been disabled.");
+		return Plugin_Handled;
+	}
+
+	if (g_bHasRoundEnded) {
+
+		Client_PrintToChat(client, false, "{O}[{G}Redie{O}] {N}Please wait for the new round to begin.");
+		return Plugin_Handled;
+	}
+
+	if (args != 1) {
+		
+		decl String:command[MAX_NAME_LENGTH];
+		GetCmdArg(0,command,sizeof(command));
+		ReplyToCommand(client, "%sUsage: %s <target>",Plugin_Tag,command);
+		return Plugin_Handled;
+	}
+
+	decl String:target[MAX_TARGET_LENGTH];
+	GetCmdArg(1, target, sizeof(target));
+	
+	decl String:target_name[MAX_TARGET_LENGTH];
+	decl target_list[MAXPLAYERS+1];
+	decl bool:tn_is_ml;
+	
+	new target_count = ProcessTargetString(
+		target,
+		client,
+		target_list,
+		sizeof(target_list),
+		COMMAND_FILTER_CONNECTED,
+		target_name,
+		sizeof(target_name),
+		tn_is_ml
+	);
+	
+	if (target_count <= 0) {
+
+		ReplyToTargetError(client,target_count);
+		return Plugin_Handled;
+	}
+
+	for (new i=0; i<target_count; ++i) {
+
+		g_bRespawnAsGhost[target_list[i]] = true;
+		CS_RespawnPlayer(target_list[i]);
+
+		Client_PrintToChat(target_list[i], false, "{O}[{G}Redie{O}] {N}You are now a ghost.");		
+	}
+
+	LogAction(client, -1, "\"%L\" forced target %s to be ghost", client, target);
+	ShowActivity2(client, Plugin_Tag, "Forced target %s to be ghost", target);
 	return Plugin_Handled;
 }
 
@@ -541,7 +687,7 @@ public Action:Event_PlayerSpawn(Handle:event, const String:name[], bool:dontBroa
 		SetEntData(client, g_iOffset_BaseEntity_CollisionGroup, 2, 4, true);
 		
 		SetEntityRenderMode(client, RENDER_TRANSALPHA);
-		Entity_SetRenderColor(client, -1, -1, -1, 150);
+		Entity_SetRenderColor(client, -1, -1, -1, g_iPlugin_GhostTransparency);
 
 		CreateTimer(0.1, Timer_TakeWeapons, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
 	}
@@ -585,14 +731,15 @@ public Action:Event_PlayerDeath(Handle:event, const String:name[], bool:dontBroa
 		}
 	}
 
+	// The client was alive and not a ghost, so we auto ghost him.
+	if (!g_bIsGhost[client] && g_flPlugin_AutoGhostTime > 0.0) {
+		CreateTimer(g_flPlugin_AutoGhostTime, Timer_AutoGhostSpawn, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
+	}
+
 	Client_InitializeVariables(client);
 
 	// Lets test if the round is over by setting the life state of the ghosts for a short time.
 	FlickerLifeState();
-
-	if (g_flPlugin_AutoGhostTime > 0.0) {
-		CreateTimer(g_flPlugin_AutoGhostTime, Timer_AutoGhostSpawn, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
-	}
 
 	return handleEvent ? Plugin_Handled : Plugin_Continue;
 }
@@ -665,7 +812,7 @@ stock Client_Initialize(client)
 	// Functions
 	
 	
-	/* Functions where the player needs to be in game */
+	/* Functions were the player needs to be in game */
 	if(!IsClientInGame(client)){
 		return;
 	}
@@ -691,3 +838,54 @@ stock Client_InitializeVariables(client)
 	g_bRespawnAsGhost[client] = false;
 }
 
+
+//## TODO: move this to smlib
+stock GetNextObservTarget(client, start=-1)
+{
+	if (start == -1) {
+		start = Client_GetObserverTarget(client);
+	}
+
+	for (new player=start+1; player <= MaxClients; player++) {
+
+		if (Client_IsValid(player) && IsPlayerAlive(player)) {
+
+			return player;
+		}
+	}
+
+	for (new player=0; player <= start; player++) {
+
+		if (Client_IsValid(player) && IsPlayerAlive(player)) {
+
+			return player;
+		}
+	}
+
+	return -1;
+}
+
+stock GetPreviousObservTarget(client, start=-1)
+{
+	if (start == -1) {
+		start = Client_GetObserverTarget(client);
+	}
+
+	for (new player=start-1; player >= 1; player--) {
+
+		if (Client_IsValid(player) && IsPlayerAlive(player)) {
+
+			return player;
+		}
+	}
+
+	for (new player=MaxClients+1; player >= start; player--) {
+
+		if (Client_IsValid(player) && IsPlayerAlive(player)) {
+
+			return player;
+		}
+	}
+
+	return -1;
+}
