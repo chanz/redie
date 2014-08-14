@@ -40,7 +40,7 @@
 #include <cstrike>
 #include <smlib>
 #include <smlib/pluginmanager>
-
+#include <scp>
 
 /***************************************************************************************
 
@@ -53,7 +53,7 @@ public Plugin:myinfo = {
 	name 						= "Redie and be a ghost",
 	author 						= "Chanz, MeoW",
 	description 				= "Return as a ghost after you died.",
-	version 					= "2.13",
+	version 					= "2.14",
 	url 						= "https://github.com/chanz/redie"
 }
 
@@ -112,6 +112,7 @@ new g_iOffset_PlayerResource_Alive = -1;
 new bool:g_bIsGhost[MAXPLAYERS+1];
 new bool:g_bCanPickupWeapons[MAXPLAYERS+1];
 new bool:g_bRespawnAsGhost[MAXPLAYERS+1];
+new Handle:g_hClient_CurrentMessageTimer[MAXPLAYERS+1];
 
 // M i s c
 
@@ -192,6 +193,14 @@ public OnPluginEnd()
 	ResetAllGhosts();
 }
 
+public OnLibraryRemoved(const String:name[])
+{
+	if (StrEqual(name, "scp"))
+	{
+		SetFailState("Simple Chat Processor Unloaded.  Plugin Disabled.");
+	}
+}
+
 public OnMapStart()
 {
 	new entity = FindEntityByClassname(0, "cs_player_manager");
@@ -242,7 +251,7 @@ public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:ang
 	return Plugin_Changed;
 }
 
-public Action:OnClientSayCommand(client, const String:command[], const String:sArgs[]){
+/*public Action:OnClientSayCommand(client, const String:command[], const String:sArgs[]){
 
 	if (!g_bIsGhost[client]) {
 		return Plugin_Continue;
@@ -254,6 +263,36 @@ public Action:OnClientSayCommand(client, const String:command[], const String:sA
 	}
 	FlickerLifeState(client, 0.001);
 	return Plugin_Continue;
+}*/
+
+public Action:OnChatMessage(&author, Handle:recipients, String:name[], String:message[])
+{
+	if (g_iPlugin_Enable == 0) {
+		return Plugin_Continue;
+	}
+
+	if (g_bGame_AllTalk) {
+		return Plugin_Continue;
+	}
+
+	new chatFlags = GetMessageFlags();
+
+	if (g_bIsGhost[author] || !IsPlayerAlive(author)) {
+
+		ClearHandle(recipients);
+		PrintToServer("#1: author: %d name: %s message: %s", author, name, message);
+		
+		new Handle:dataPack = CreateDataPack();
+		WritePackCell(dataPack, author);
+		WritePackString(dataPack, name);
+		WritePackString(dataPack, message);
+		WritePackCell(dataPack, chatFlags);
+		if (g_hClient_CurrentMessageTimer[author] == INVALID_HANDLE) {
+			g_hClient_CurrentMessageTimer[author] = CreateTimer(0.001, Timer_OnChatMessage, dataPack);
+		}
+		return Plugin_Stop;
+	}
+	return Plugin_Continue;
 }
 
 /**************************************************************************************
@@ -263,6 +302,68 @@ public Action:OnClientSayCommand(client, const String:command[], const String:sA
 
 
 **************************************************************************************/
+public Action:Timer_OnChatMessage(Handle:timer, any:dataPack) {
+
+	ResetPack(dataPack);
+	new author = ReadPackCell(dataPack);
+	new String:name[MAXLENGTH_NAME];
+	ReadPackString(dataPack, name, sizeof(name));
+	new String:message[MAXLENGTH_MESSAGE];
+	ReadPackString(dataPack, message, sizeof(message));
+	new chatFlags = ReadPackCell(dataPack);
+	CloseHandle(dataPack);
+
+	new authorTeam = GetClientTeam(author);
+	new String:authorTeamName[MAX_NAME_LENGTH];
+	GetTeamName(authorTeam, authorTeamName, sizeof(authorTeamName));
+
+	// The ghosts chats to all, so the normal recipients are dead players other ghosts and spectators
+	if (chatFlags & CHATFLAGS_ALL) {
+
+		LOOP_CLIENTS(client, CLIENTFILTER_INGAMEAUTH) {
+
+			new clientTeam = GetClientTeam(client);
+			// dead, ghost OR spectator
+			if (!IsPlayerAlive(client) || g_bIsGhost[client] || clientTeam == TEAM_SPECTATOR) {
+				PrintToServer("allow message to: %N", client);
+
+				Color_ChatSetSubject(author);
+				if (g_bIsGhost[author]) {
+					Client_PrintToChat(client, true, "*GHOST* {T}%s {N}: %s", name, message);
+				}
+				else {
+					Client_PrintToChat(client, true, "*DEAD* {T}%s {N}: %s", name, message);
+				}
+				Color_ChatClearSubject();
+			}
+		}
+	}
+	// The ghosts chats to team, so the normal recipients are dead players on the same team, other ghosts on the same team and spectators
+	else if (chatFlags & CHATFLAGS_TEAM) {
+
+		LOOP_CLIENTS(client, CLIENTFILTER_INGAMEAUTH) {
+
+			new clientTeam = GetClientTeam(client);
+			// dead or ghost on the same team OR spectator
+			if (((!IsPlayerAlive(client) || g_bIsGhost[client]) && clientTeam == authorTeam) || clientTeam == TEAM_SPECTATOR) {
+				PrintToServer("allow team message to: %N", client);
+
+				Color_ChatSetSubject(author);
+				if (g_bIsGhost[author]) {
+					Client_PrintToChat(client, true, "*GHOST*(%s) {T}%s {N}: %s", authorTeamName, name, message);
+				}
+				else {
+					Client_PrintToChat(client, true, "*DEAD*(%s) {T}%s {N}: %s", authorTeamName, name, message);
+				}
+				Color_ChatClearSubject();
+			}
+		}
+	}
+
+	g_hClient_CurrentMessageTimer[author] = INVALID_HANDLE;
+	return Plugin_Stop;
+}
+
 public Action:NormalSoundHook_BlockSoundsFromGhosts(clients[64], &numClients, String:sample[PLATFORM_MAX_PATH], &entity, &channel, &Float:volume, &level, &pitch, &flags)
 {
 	if (g_iPlugin_Enable == 0) {
