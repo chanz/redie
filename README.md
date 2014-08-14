@@ -3,7 +3,12 @@ redie
 
 SourceMod plugin: [Counter-Strike Source] Return as a ghost after you died.
 
-This plugins adds the command sm_redie to let dead players respawn in Counter-Strike Source
+This plugins adds the command sm_redie to let dead players respawn in Counter-Strike Source.
+
+Requirements
+=====
+SourceMod 1.5 or higher
+Simple Chatprocessor: https://forums.alliedmods.net/showthread.php?p=1820365
 
 Credits
 =====
