@@ -78,7 +78,7 @@ public Plugin:myinfo = {
 
 
 // Plugin Internal Variables
-
+new bool:g_bPlugin_IsLateLoad = false;
 
 // Console Variables
 new Handle:g_cvarEnable 					= INVALID_HANDLE;
@@ -89,6 +89,7 @@ new Handle:g_cvarAllTalk = INVALID_HANDLE;
 new Handle:g_cvarGhostWorldDamage = INVALID_HANDLE;
 new Handle:g_cvarGhostPlayerDamage = INVALID_HANDLE;
 new Handle:g_cvarGhostFallDamage = INVALID_HANDLE;
+new Handle:g_cvarGhostDisableTriggers = INVALID_HANDLE;
 
 // Console Variables: Runtime Optimizers
 new g_iPlugin_Enable 					= 1;
@@ -99,6 +100,7 @@ new bool:g_bGame_AllTalk = false;
 new bool:g_bPlugin_GhostWorldDamage = false;
 new bool:g_bPlugin_GhostPlayerDamage = false;
 new bool:g_bPlugin_GhostFallDamage = false;
+new bool:g_bPlugin_GhostDisableTriggers = false;
 
 // Timers
 
@@ -130,6 +132,11 @@ new Handle:g_hClient_CurrentMessageTimer[MAXPLAYERS+1];
 
 
 ***************************************************************************************/
+public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
+{
+	g_bPlugin_IsLateLoad = late;
+}
+
 public OnPluginStart()
 {
 	// Initialization for SMLib
@@ -157,8 +164,9 @@ public OnPluginStart()
 	g_cvarGhostTransparency = PluginManager_CreateConVar("ghost_transparency", "175", "Transparency of a player as ghost (0 = invisible; 255 = fully visible)", 0, true, 0.0, true, 255.0);
 	g_cvarHideGhostsFromObservers = PluginManager_CreateConVar("hide_ghosts_from_observers", "1", "When set to 1 spectators and dead players observing can't see or follow ghosts", 0, true, 0.0, true, 1.0);
 	g_cvarGhostWorldDamage = PluginManager_CreateConVar("ghost_world_damage", "0", "When set to 0, world damage (ex: fall damage, lasers or trigger_hurt entities) is blocked for ghosts", 0, true, 0.0, true, 1.0);
-	g_cvarGhostPlayerDamage = PluginManager_CreateConVar("ghost_player_damage", "0", "When set to 0, player damage (knifes, hegrenades, etc) is blocked for ghosts.\nWarning: Damage from projectile weapons (ak47, awp, etc.) is always blocked, due to technical limitations.", 0, true, 0.0, true, 1.0);
-	g_cvarGhostFallDamage = PluginManager_CreateConVar("ghost_fall_damage", "0", "When set to 0, fall damage is disabled for ghosts. WARNING: When redie_ghost_world_damage is 0, the value of this console variable has no effect.", 0, true, 0.0, true, 1.0);
+	g_cvarGhostPlayerDamage = PluginManager_CreateConVar("ghost_player_damage", "0", "When set to 0, player damage (knifes, hegrenades, etc) is blocked for ghosts.\nWARNING: Damage from projectile weapons (ak47, awp, etc.) is always blocked, due to technical limitations.", 0, true, 0.0, true, 1.0);
+	g_cvarGhostFallDamage = PluginManager_CreateConVar("ghost_fall_damage", "0", "When set to 0, fall damage is disabled for ghosts.\nWARNING: When redie_ghost_world_damage is 0, the value of this console variable has no effect.", 0, true, 0.0, true, 1.0);
+	g_cvarGhostDisableTriggers = PluginManager_CreateConVar("ghost_disable_trigger", "0", "When set to 1, ghosts are not able to activate triggers (entity trigger_multiple). Triggers are world elements to open sometimes doors or spawn weapons.", 0, true, 0.0, true, 1.0);
 
 	// Find Cvars
 	g_cvarAllTalk = FindConVar("sv_alltalk");
@@ -172,6 +180,7 @@ public OnPluginStart()
 	HookConVarChange(g_cvarGhostWorldDamage, ConVarChange_GhostWorldDamage);
 	HookConVarChange(g_cvarGhostPlayerDamage, ConVarChange_GhostPlayerDamage);
 	HookConVarChange(g_cvarGhostFallDamage, ConVarChange_GhostFallDamage);
+	HookConVarChange(g_cvarGhostDisableTriggers, ConVarChange_GhostDisableTriggers);
 	
 	// Event Hooks
 	PluginManager_HookEvent("round_start", Event_RoundStart);	
@@ -223,6 +232,12 @@ public OnMapStart()
 		return;
 	}
 	SDKHook(entity, SDKHook_ThinkPost, Hook_ThinkPost_PlayerManager);
+
+	// if its a late load scan again for the triggers
+	if (g_bPlugin_IsLateLoad) {
+
+		LateSearchForTriggers();
+	}
 }
 
 public OnConfigsExecuted()
@@ -236,6 +251,7 @@ public OnConfigsExecuted()
 	g_bPlugin_GhostWorldDamage = GetConVarBool(g_cvarGhostWorldDamage);
 	g_bPlugin_GhostPlayerDamage = GetConVarBool(g_cvarGhostPlayerDamage);
 	g_bPlugin_GhostFallDamage = GetConVarBool(g_cvarGhostFallDamage);
+	g_bPlugin_GhostDisableTriggers = GetConVarBool(g_cvarGhostDisableTriggers);
 
 	// Timers
 	CreateTimer(0.1, Timer_UpdateListeners, INVALID_HANDLE, TIMER_REPEAT);
@@ -243,6 +259,13 @@ public OnConfigsExecuted()
 	// Mind: this is only here for late load, since on map change or server start, there isn't any client.
 	// Remove it if you don't need it.
 	Client_InitializeAll();
+}
+
+public OnEntityCreated(entity, const String:classname[]) 
+{
+	if (IsValidEntity(entity) && StrEqual(classname, "trigger_multiple", false)) {
+		HookSingleTrigger(entity);
+	}
 }
 
 public OnClientPostAdminCheck(client)
@@ -520,6 +543,15 @@ public Action:Timer_UpdateListeners(Handle:timer) {
 	S D K   H O O K
 
 **************************************************************************************/
+public Action:Hook_OnTouch(entity, other)
+{
+	if (g_bPlugin_GhostDisableTriggers && Client_IsValid(other) && g_bIsGhost[other]) {
+		return Plugin_Handled;
+	}
+
+	return Plugin_Continue;
+}
+
 public Hook_ThinkPost_PlayerManager(entity)
 {
 	if (g_iPlugin_Enable == 0) {
@@ -660,6 +692,12 @@ public ConVarChange_GhostFallDamage(Handle:cvar, const String:oldVal[], const St
 {
 	g_bPlugin_GhostFallDamage = bool:StringToInt(newVal);
 }
+
+public ConVarChange_GhostDisableTriggers(Handle:cvar, const String:oldVal[], const String:newVal[])
+{
+	g_bPlugin_GhostDisableTriggers = bool:StringToInt(newVal);
+}
+
 
 /**************************************************************************************
 
@@ -1042,6 +1080,32 @@ ResetAllGhosts()
 	}
 }
 
+LateSearchForTriggers()
+{
+	new maxEntites = GetMaxEntities();
+
+	for (new entity=MaxClients; entity<maxEntites; entity++) {
+
+		if (IsValidEntity(entity)) {
+
+			decl String:classname[MAX_NAME_LENGTH];
+			GetEntityClassname(entity, classname, sizeof(classname));
+
+			if (StrEqual(classname, "trigger_multiple", false)) {
+
+				HookSingleTrigger(entity);
+			}
+		}
+	}
+}
+
+HookSingleTrigger(entity)
+{
+	SDKHook(entity, SDKHook_Touch, Hook_OnTouch);
+	SDKHook(entity, SDKHook_StartTouch, Hook_OnTouch);
+	SDKHook(entity, SDKHook_EndTouch, Hook_OnTouch);
+}
+
 /***************************************************************************************
 
 	S T O C K
@@ -1106,7 +1170,7 @@ stock GetNextObservTarget(client, start=-1)
 		}
 	}
 
-	for (new player=0; player <= start; player++) {
+	for (new player=1; player <= start; player++) {
 
 		if (IsClientInGame(player) && IsPlayerAlive(player)) {
 
@@ -1131,7 +1195,7 @@ stock GetPreviousObservTarget(client, start=-1)
 		}
 	}
 
-	for (new player=MaxClients+1; player >= start; player--) {
+	for (new player=MaxClients; player >= start; player--) {
 
 		if (IsClientInGame(player) && IsPlayerAlive(player)) {
 
