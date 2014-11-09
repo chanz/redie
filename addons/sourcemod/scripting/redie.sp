@@ -53,7 +53,7 @@ public Plugin:myinfo = {
 	name 						= "Redie and be a ghost",
 	author 						= "Chanz, MeoW",
 	description 				= "Return as a ghost after you died.",
-	version 					= "2.14",
+	version 					= "2.15",
 	url 						= "https://github.com/chanz/redie"
 }
 
@@ -86,6 +86,9 @@ new Handle:g_cvarAutoGhostTime				= INVALID_HANDLE;
 new Handle:g_cvarGhostTransparency = INVALID_HANDLE;
 new Handle:g_cvarHideGhostsFromObservers = INVALID_HANDLE;
 new Handle:g_cvarAllTalk = INVALID_HANDLE;
+new Handle:g_cvarGhostWorldDamage = INVALID_HANDLE;
+new Handle:g_cvarGhostPlayerDamage = INVALID_HANDLE;
+new Handle:g_cvarGhostFallDamage = INVALID_HANDLE;
 
 // Console Variables: Runtime Optimizers
 new g_iPlugin_Enable 					= 1;
@@ -93,6 +96,9 @@ new Float:g_flPlugin_AutoGhostTime	 	= 0.0;
 new g_iPlugin_GhostTransparency = 175;
 new bool:g_bPlugin_HideGhostsFromObservers = true;
 new bool:g_bGame_AllTalk = false;
+new bool:g_bPlugin_GhostWorldDamage = false;
+new bool:g_bPlugin_GhostPlayerDamage = false;
+new bool:g_bPlugin_GhostFallDamage = false;
 
 // Timers
 
@@ -150,6 +156,9 @@ public OnPluginStart()
 	g_cvarAutoGhostTime = PluginManager_CreateConVar("auto_ghost_time", "0", "Time in seconds after a player is auto respawned as ghost after death (0 = disabled)");
 	g_cvarGhostTransparency = PluginManager_CreateConVar("ghost_transparency", "175", "Transparency of a player as ghost (0 = invisible; 255 = fully visible)", 0, true, 0.0, true, 255.0);
 	g_cvarHideGhostsFromObservers = PluginManager_CreateConVar("hide_ghosts_from_observers", "1", "When set to 1 spectators and dead players observing can't see or follow ghosts", 0, true, 0.0, true, 1.0);
+	g_cvarGhostWorldDamage = PluginManager_CreateConVar("ghost_world_damage", "0", "When set to 0, world damage (ex: fall damage, lasers or trigger_hurt entities) is blocked for ghosts", 0, true, 0.0, true, 1.0);
+	g_cvarGhostPlayerDamage = PluginManager_CreateConVar("ghost_player_damage", "0", "When set to 0, player damage (knifes, hegrenades, etc) is blocked for ghosts.\nWarning: Damage from projectile weapons (ak47, awp, etc.) is always blocked, due to technical limitations.", 0, true, 0.0, true, 1.0);
+	g_cvarGhostFallDamage = PluginManager_CreateConVar("ghost_fall_damage", "0", "When set to 0, fall damage is disabled for ghosts. WARNING: When redie_ghost_world_damage is 0, the value of this console variable has no effect.", 0, true, 0.0, true, 1.0);
 
 	// Find Cvars
 	g_cvarAllTalk = FindConVar("sv_alltalk");
@@ -160,6 +169,9 @@ public OnPluginStart()
 	HookConVarChange(g_cvarGhostTransparency, ConVarChange_GhostTransparency);
 	HookConVarChange(g_cvarHideGhostsFromObservers, ConVarChange_HideGhostsFromObservers);
 	HookConVarChange(g_cvarAllTalk, ConVarChange_AllTalk);
+	HookConVarChange(g_cvarGhostWorldDamage, ConVarChange_GhostWorldDamage);
+	HookConVarChange(g_cvarGhostPlayerDamage, ConVarChange_GhostPlayerDamage);
+	HookConVarChange(g_cvarGhostFallDamage, ConVarChange_GhostFallDamage);
 	
 	// Event Hooks
 	PluginManager_HookEvent("round_start", Event_RoundStart);	
@@ -221,6 +233,9 @@ public OnConfigsExecuted()
 	g_iPlugin_GhostTransparency = GetConVarInt(g_cvarGhostTransparency);
 	g_bPlugin_HideGhostsFromObservers = GetConVarBool(g_cvarHideGhostsFromObservers);
 	g_bGame_AllTalk = GetConVarBool(g_cvarAllTalk);
+	g_bPlugin_GhostWorldDamage = GetConVarBool(g_cvarGhostWorldDamage);
+	g_bPlugin_GhostPlayerDamage = GetConVarBool(g_cvarGhostPlayerDamage);
+	g_bPlugin_GhostFallDamage = GetConVarBool(g_cvarGhostFallDamage);
 
 	// Timers
 	CreateTimer(0.1, Timer_UpdateListeners, INVALID_HANDLE, TIMER_REPEAT);
@@ -574,6 +589,23 @@ public Action:Hook_OnTakeDamage_Client(victim, &attacker, &inflictor, &Float:dam
 	}
 
 	if (g_bIsGhost[victim]) {
+
+		// If the cvar allows damage from world then check the attacker and if its world, return continue.
+		if (g_bPlugin_GhostWorldDamage && attacker == 0) {
+			return Plugin_Continue;
+		}
+
+		// If the cvar allows damage from players then check the attacker and if it isn't world, return continue.
+		if (g_bPlugin_GhostPlayerDamage && attacker != 0) {
+			return Plugin_Continue;
+		}
+
+		// If the cvar allows fall damage, check the damagetype and if it's DMG_FALL, return continue.
+		if (g_bPlugin_GhostFallDamage && damagetype == DMG_FALL) {
+			return Plugin_Continue;
+		}
+
+		// Everything else is blocked
 		return Plugin_Handled;
 	}
 
@@ -612,6 +644,21 @@ public ConVarChange_HideGhostsFromObservers(Handle:cvar, const String:oldVal[], 
 public ConVarChange_AllTalk(Handle:cvar, const String:oldVal[], const String:newVal[])
 {
 	g_bGame_AllTalk = bool:StringToInt(newVal);
+}
+
+public ConVarChange_GhostWorldDamage(Handle:cvar, const String:oldVal[], const String:newVal[])
+{
+	g_bPlugin_GhostWorldDamage = bool:StringToInt(newVal);
+}
+
+public ConVarChange_GhostPlayerDamage(Handle:cvar, const String:oldVal[], const String:newVal[])
+{
+	g_bPlugin_GhostPlayerDamage = bool:StringToInt(newVal);
+}
+
+public ConVarChange_GhostFallDamage(Handle:cvar, const String:oldVal[], const String:newVal[])
+{
+	g_bPlugin_GhostFallDamage = bool:StringToInt(newVal);
 }
 
 /**************************************************************************************
@@ -1053,7 +1100,7 @@ stock GetNextObservTarget(client, start=-1)
 
 	for (new player=start+1; player <= MaxClients; player++) {
 
-		if (Client_IsValid(player) && IsPlayerAlive(player)) {
+		if (IsClientInGame(player) && IsPlayerAlive(player)) {
 
 			return player;
 		}
@@ -1061,7 +1108,7 @@ stock GetNextObservTarget(client, start=-1)
 
 	for (new player=0; player <= start; player++) {
 
-		if (Client_IsValid(player) && IsPlayerAlive(player)) {
+		if (IsClientInGame(player) && IsPlayerAlive(player)) {
 
 			return player;
 		}
@@ -1078,7 +1125,7 @@ stock GetPreviousObservTarget(client, start=-1)
 
 	for (new player=start-1; player >= 1; player--) {
 
-		if (Client_IsValid(player) && IsPlayerAlive(player)) {
+		if (IsClientInGame(player) && IsPlayerAlive(player)) {
 
 			return player;
 		}
@@ -1086,7 +1133,7 @@ stock GetPreviousObservTarget(client, start=-1)
 
 	for (new player=MaxClients+1; player >= start; player--) {
 
-		if (Client_IsValid(player) && IsPlayerAlive(player)) {
+		if (IsClientInGame(player) && IsPlayerAlive(player)) {
 
 			return player;
 		}
